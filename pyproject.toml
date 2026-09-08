@@ -20,7 +20,8 @@ dependencies = [
 	"scipy",
 	"matplotlib",
 	"seaborn",
-	"scikit-learn"
+	"scikit-learn",
+	"statsmodels"
 ]
 
 [tool.setuptools.packages.find]

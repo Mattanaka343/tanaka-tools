@@ -17,7 +17,7 @@ from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap
 from scipy.stats import kstest, anderson, shapiro, linregress
 from statsmodels.tsa.stattools import adfuller, acf
-from statmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.stats.diagnostic import acorr_ljungbox
 
 from typing import Any, Literal
 
@@ -26,11 +26,13 @@ from typing import Any, Literal
 
 
 def corr_heatmap(data: pd.DataFrame, 
-                 title:None|str, 
-                 annot: bool = True, 
+                 title:None|str = None,
+                 annot: bool= True, 
                  cmap: list[str]|str = 'coolwarm', 
                  show: bool = False, 
-                 save_path:None|str = None) -> Figure:
+                 save_path:None|str = None,
+                 x_label: str | None = None,
+                 y_label: str | None = None) -> Figure:
     '''
     Generates a good looking correlation heatmap from a DataFrame
 
@@ -83,8 +85,8 @@ def corr_heatmap(data: pd.DataFrame,
     )
 
     # Remove spines and axis labels
-    ax.set_xlabel("")
-    ax.set_ylabel("")
+    ax.set_xlabel(x_label or "")
+    ax.set_ylabel(y_label or "")
     sns.despine(left=True, bottom=True)
 
     if title:
@@ -108,6 +110,9 @@ def histogram(data: pd.Series,
               color: str = '#700202',
               save_path: None|str = None,
               ax: None|Axes = None,
+              x_label: str | None = None,
+              y_label: str | None = None,
+              title: str | None = None,
               **kwargs
               ) -> Figure|Axes:
     """
@@ -146,6 +151,8 @@ def histogram(data: pd.Series,
     else:
         fig = ax.get_figure()
 
+    sns.set_theme(style="whitegrid", context="talk")
+
     sns.histplot(
         data=data,
         stat="density",
@@ -154,9 +161,10 @@ def histogram(data: pd.Series,
         **kwargs
     )
 
-    ax.set_title(f"{dist.capitalize()} Goodness-of-Fit")
-    ax.set_xlabel("Value")
-    ax.set_ylabel("Density")
+    default_title = f"{dist.capitalize()} Goodness-of-Fit"
+    ax.set_title(title or default_title)
+    ax.set_xlabel(x_label or "Value")
+    ax.set_ylabel(y_label or "Density")
 
     stats = [
         f"Test: {fit_test}",
@@ -205,20 +213,27 @@ def histogram(data: pd.Series,
         return fig 
 
 
-def time_series_plot(series: pd.Series,
+def time_series_plot(series: pd.Series | pd.DataFrame,
                      seasonal_period: int | None = None,
                      alpha: float = 0.05,
                      figsize: tuple[int, int] = (14, 7),
                      c1: str = "#700202",
                      c2: str = "#027070",
                      show: bool = True,
-                     save_dir: None|str = None
+                     save_dir: None|str = None,
+                     x_label: str | None = None,
+                     y_label: str | None = None,
+                     title: str | None = None
                      )->tuple[Figure,dict]:
     """
     Plot and diagnostically analyze a time series.
 
     Inputs:
-        series -> pandas.Series: Time-series data. A DatetimeIndex is recommended.
+        series -> pandas.Series or pandas.DataFrame: Time-series data. A Series
+                                 should have a DatetimeIndex;
+                                 a DataFrame must contain one
+                                 time/index column and one
+                                 numeric value column.
         seasonal_period -> int|None: If present represents the expected period for 
                                      the seasonal observations. Else seasonality is automatically detected using ACF
         alpha -> float: 0.05 by default. I trefers to the significance level used in statistical tests 
@@ -236,6 +251,24 @@ def time_series_plot(series: pd.Series,
     # ==========================================================
     # Prepare data
     # ==========================================================
+
+    if isinstance(series, pd.DataFrame):
+        value_columns = series.select_dtypes(include=np.number).columns
+        index_columns = [column for column in series.columns if column not in value_columns]
+
+        if len(value_columns) != 1 or len(index_columns) != 1:
+            raise ValueError(
+                "A DataFrame input must contain exactly one numeric value column "
+                "and one time/index column."
+            )
+
+        series = pd.Series(
+            series[value_columns[0]].to_numpy(),
+            index=pd.Index(series[index_columns[0]], name=index_columns[0]),
+            name=value_columns[0],
+        )
+    elif not isinstance(series, pd.Series):
+        raise TypeError("series must be a pandas Series or DataFrame.")
 
     data = series.dropna()
 
@@ -365,7 +398,8 @@ def time_series_plot(series: pd.Series,
 
     sns.set_theme(
         style="whitegrid",
-        context="notebook"
+        context="talk",
+        palette="deep"
     )
 
     fig, ax = plt.subplots(
@@ -396,16 +430,16 @@ def time_series_plot(series: pd.Series,
     )
 
     ax.set_title(
-        f"Time Series: {series.name or 'Series'}",
+        title or f"Time Series: {series.name or 'Series'}",
         fontsize=18,
         fontweight="bold",
         pad=15
     )
 
-    ax.set_xlabel("Time", fontsize=12)
+    ax.set_xlabel(x_label or "Time", fontsize=12)
 
     ax.set_ylabel(
-        series.name or "Value",
+        y_label or (series.name or "Value"),
         fontsize=12
     )
 
@@ -517,74 +551,135 @@ def time_series_plot(series: pd.Series,
         fig.savefig(save_dir)
 
     return fig, results
-    
-def aggregate_barplot(df: pd.DataFrame,
-                      title: str,
-                      category_col: str,
-                      aggregate_col: str | None = None,
-                      aggregate_value: Any=None,
-                      figsize: tuple[int,int] =(8, 5),
-                      color: str ='#700202',
-                      show: bool = True,
-                      save_dir: str|None = None,
-                      **kwargs
-                      ) -> Figure:
+
+def stacked_barplot(
+    df: pd.DataFrame,
+    title: str,
+    category_col: str,
+    aggregate_col: str,
+    colors: list = ["#700202", "#027070"],
+    figsize=(8, 5),
+    ylabel="Count",
+    xlabel: str | None = None,
+    rotation: float = 30
+):
     """
-    Plot counts by category, optionally restricted to a value
-    in another column.
+    Create a stacked barplot showing raw counts for each category and
+    each segment, with the total count labeled above each bar.
 
-    Inputs:
-        df -> pandas.DataFrame: The dataframe that contains the data to be analyzed
-        title ->  str:  The title of the plot
-        category_col -> string: Column whose categories will be shown on the x-axis.
-        aggregate_col  -> str | None:  If present it is a secondary column to filter the main coulumn by
-        aggregate_value -> Any: The value that is relevant in the aggregate column
-        figsize -> tuple[int,int]: The size of the plot, takes (8, 5) by default
-    Outputs:
-        fig -> Figure: The matplotlib graph
-        ax -> Axes: The matplotlib axes containing the graph
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe.
+
+    category_col : str
+        Column defining the main bars.
+
+    aggregate_col : str
+        Column defining the segments within each bar.
+
+    colors : list
+        List of colors for the stacked segments.
+
+    figsize : tuple
+        Figure size.
+
+    title : str, optional
+        Plot title.
+
+    ylabel : str
+        Y-axis label.
+
+    Returns
+    -------
+    fig, ax
     """
 
-    data = df.copy()
+    sns.set_theme(style="whitegrid", context="talk")
 
-    # If an aggregate column and value are provided,
-    # only keep rows matching that value
-    if aggregate_col is not None:
-        data = data[data[aggregate_col] == aggregate_value]
-
-    # Count observations in each category
-    counts = (
-        data[category_col]
-        .value_counts()
-        .reset_index()
+    counts = pd.crosstab(
+        df[category_col],
+        df[aggregate_col]
     )
 
-    counts.columns = [category_col, "count"]
+    counts = counts.loc[
+        counts.sum(axis=1).sort_values(ascending=False).index
+    ]
 
-    # Plot
     fig, ax = plt.subplots(figsize=figsize)
 
-    sns.barplot(
-        data=counts,
-        x=category_col,
-        y="count",
-        ax=ax,
-        color=color,
-        **kwargs
+    palette = sns.color_palette(
+        colors if isinstance(colors, list) else [colors],
+        n_colors=len(counts.columns)
     )
 
-    ax.set_xlabel(category_col)
-    ax.set_ylabel("Count")
+    x = np.arange(len(counts.index))
+    bottom = np.zeros(len(counts.index))
+    totals = counts.sum(axis=1).to_numpy()
 
-    if title is not None:
-        ax.set_title(title)
+    for idx, column in enumerate(counts.columns):
+        values = counts[column].to_numpy()
 
-    plt.tight_layout()
+        ax.bar(
+            x,
+            values,
+            bottom=bottom,
+            width=0.8,
+            color=palette[idx],
+            edgecolor="white",
+            linewidth=1,
+            label=str(column),
+            alpha=0.96,
+        )
 
-    if show:
-        plt.show()
+        for i, value in enumerate(values):
+            if value > 0:
+                text_color = "white" if value / max(totals[i], 1) > 0.18 else "#222222"
+                if value >= max(3, totals.max() * 0.15):
+                    ax.text(
+                        x[i],
+                        bottom[i] + value / 2,
+                        f"{value}",
+                        ha="center",
+                        va="center",
+                        color=text_color,
+                        fontsize=8,
+                        fontweight="bold",
+                    )
 
-    if save_dir:
-        fig.savefig(save_dir)
+        bottom += values
 
-    return fig, ax
+    for i, total in enumerate(totals):
+        ax.text(
+            x[i],
+            total + 0.5,
+            str(int(total)),
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+            color="#222222",
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(counts.index, rotation=rotation,ha ='center', fontsize=10)
+    ax.set_xlabel(xlabel or category_col, fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11)
+
+    if title:
+        ax.set_title(title, pad=12, fontsize=16, fontweight="bold")
+
+    ax.legend(
+        title=aggregate_col,
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+        frameon=True,
+        fontsize=10,
+        title_fontsize=11,
+    )
+
+    ax.margins(x=0.02)
+    sns.despine(ax=ax, top=True, right=True)
+    plt.tight_layout(pad=1.2)
+
+    return fig, ax                                                                                                                              
